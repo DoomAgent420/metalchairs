@@ -106,6 +106,10 @@ body{display:flex;flex-direction:column}
     sandbox="allow-scripts allow-forms allow-popups"
     referrerpolicy="no-referrer">
   </iframe>
+  <iframe id="proxy-frame"
+  sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+  referrerpolicy="no-referrer">
+</iframe>
   <div id="err">
     <h2>Could not load page</h2>
     <p id="err-detail"></p>
@@ -229,6 +233,10 @@ function showErr(url, msg) {
 }
 function retry() { errBox.classList.remove('show'); go(current, false); }
 frame.onload = () => setProgress(0);
+<iframe id="proxy-frame"
+  sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+  referrerpolicy="no-referrer">
+</iframe>
 </script>
 </body>
 </html>

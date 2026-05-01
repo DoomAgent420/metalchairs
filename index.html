@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Browser</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#111;color:#eee;font-family:system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+
+#toolbar{
+  display:flex;align-items:center;gap:6px;
+  padding:8px 10px;
+  background:#1c1c1c;
+  border-bottom:1px solid #333;
+  flex-shrink:0;
+}
+.nav-btn{
+  width:30px;height:30px;border-radius:50%;border:none;
+  background:#2a2a2a;color:#aaa;font-size:16px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:background .15s,color .15s;flex-shrink:0;
+}
+.nav-btn:hover:not(:disabled){background:#3a3a3a;color:#fff}
+.nav-btn:disabled{opacity:.35;cursor:not-allowed}
+
+#url-wrap{
+  flex:1;display:flex;align-items:center;
+  background:#2a2a2a;border:1px solid #444;border-radius:20px;
+  padding:0 12px;gap:6px;transition:border-color .2s;
+}
+#url-wrap:focus-within{border-color:#3b82f6}
+#lock{font-size:12px;color:#666}
+#url-bar{
+  flex:1;background:transparent;border:none;outline:none;
+  color:#eee;font-size:14px;padding:6px 0;
+}
+#go-btn{
+  padding:5px 14px;background:#3b82f6;border:none;border-radius:16px;
+  color:#fff;font-size:13px;font-weight:500;cursor:pointer;flex-shrink:0;
+  transition:background .15s;
+}
+#go-btn:hover{background:#2563eb}
+
+#statusbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:2px 12px;height:22px;
+  background:#0d0d0d;border-bottom:1px solid #222;
+  font-size:11px;color:#555;flex-shrink:0;
+}
+#status-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#backend-pill{
+  font-size:10px;padding:1px 8px;border-radius:10px;
+  background:#1e3a5f;color:#60a5fa;flex-shrink:0;margin-left:8px;
+}
+#backend-pill.fallback{background:#2d3a1e;color:#86efac}
+
+#frame-wrap{flex:1;position:relative;overflow:hidden}
+#proxy-frame{width:100%;height:100%;border:none;background:#fff}
+
+#progress{
+  position:absolute;top:0;left:0;height:2px;
+  background:#3b82f6;width:0;pointer-events:none;
+  transition:width .25s,opacity .3s;
+}
+
+#err{
+  display:none;position:absolute;inset:0;
+  background:#111;flex-direction:column;
+  align-items:center;justify-content:center;gap:14px;
+}
+#err.show{display:flex}
+#err h2{color:#ef4444;font-size:18px;font-weight:600}
+#err p{color:#888;font-size:13px;max-width:380px;text-align:center;line-height:1.6}
+#err button{
+  padding:8px 20px;background:#3b82f6;border:none;
+  border-radius:8px;color:#fff;cursor:pointer;font-size:14px;
+}
+</style>
+</head>
+<body>
+
+<!-- ── Toolbar ────────────────────────────────────────── -->
+<div id="toolbar">
+  <button class="nav-btn" id="back-btn" title="Back" disabled>&#8592;</button>
+  <button class="nav-btn" id="fwd-btn"  title="Forward" disabled>&#8594;</button>
+  <button class="nav-btn" id="rl-btn"   title="Reload">&#8635;</button>
+  <div id="url-wrap">
+    <span id="lock">&#128274;</span>
+    <input id="url-bar" type="text" placeholder="Enter URL..." spellcheck="false" autocomplete="off">
+  </div>
+  <button id="go-btn">Go</button>
+</div>
+
+<!-- ── Status bar ─────────────────────────────────────── -->
+<div id="statusbar">
+  <span id="status-txt">Ready</span>
+  <span id="backend-pill">worker</span>
+</div>
+
+<!-- ── Frame area ─────────────────────────────────────── -->
+<div id="frame-wrap">
+  <div id="progress"></div>
+  <iframe id="proxy-frame"
+    sandbox="allow-scripts allow-forms allow-popups"
+    referrerpolicy="no-referrer">
+  </iframe>
+  <div id="err">
+    <h2>Could not load page</h2>
+    <p id="err-detail"></p>
+    <button onclick="retry()">Retry</button>
+  </div>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────
+// After deploying worker.js, put your worker URL here:
+const WORKER = 'https://quiet-sound-cc77.chrisjlove2022.workers.dev/';
+// If you host backend.js somewhere (Render, Railway, etc.) put it here:
+const FALLBACK = 'https://YOUR-FALLBACK-SERVER.com/api';
+// ─────────────────────────────────────────────────────────────
+
+const frame    = document.getElementById('proxy-frame');
+const urlBar   = document.getElementById('url-bar');
+const progress = document.getElementById('progress');
+const statusEl = document.getElementById('status-txt');
+const backBtn  = document.getElementById('back-btn');
+const fwdBtn   = document.getElementById('fwd-btn');
+const errBox   = document.getElementById('err');
+const errDet   = document.getElementById('err-detail');
+const pill     = document.getElementById('backend-pill');
+const lock     = document.getElementById('lock');
+
+let hist = [], histIdx = -1, current = '';
+
+// ── Register Service Worker (Layer 2 interception) ───────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+}
+
+// ── Core navigate ─────────────────────────────────────────────
+async function go(rawUrl, push = true) {
+  if (!rawUrl) return;
+  if (!/^https?:\/\//i.test(rawUrl)) rawUrl = 'https://' + rawUrl;
+
+  current = rawUrl;
+  urlBar.value = rawUrl;
+  errBox.classList.remove('show');
+  setProgress(30);
+  setStatus('Connecting…');
+  lock.style.color = rawUrl.startsWith('https') ? '#22c55e' : '#f59e0b';
+
+  let html, backend = 'worker';
+
+  try {
+    html = await fetchThrough(WORKER, rawUrl);
+  } catch (workerErr) {
+    setStatus('Worker failed, trying fallback…');
+    try {
+      html = await fetchThrough(FALLBACK, rawUrl);
+      backend = 'fallback';
+    } catch (fbErr) {
+      setProgress(0);
+      showErr(rawUrl, workerErr.message);
+      return;
+    }
+  }
+
+  setProgress(80);
+  renderInFrame(html, rawUrl);
+
+  pill.textContent = backend;
+  pill.className = backend === 'fallback' ? 'fallback' : '';
+
+  if (push) {
+    hist = hist.slice(0, histIdx + 1);
+    hist.push(rawUrl);
+    histIdx = hist.length - 1;
+  }
+  updateBtns();
+  setProgress(100);
+  setStatus(rawUrl);
+}
+
+async function fetchThrough(endpoint, rawUrl) {
+  const url = `${endpoint}/?url=${encodeURIComponent(rawUrl)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+  if (!res.ok && res.status >= 500) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
+
+function renderInFrame(html, rawUrl) {
+  // Use Blob URL so iframe is isolated from our origin
+  const prev = frame.dataset.blob;
+  const blob = new Blob([html], { type: 'text/html' });
+  const blobUrl = URL.createObjectURL(blob);
+  frame.src = blobUrl;
+  frame.dataset.blob = blobUrl;
+  if (prev) setTimeout(() => URL.revokeObjectURL(prev), 5000);
+}
+
+// ── Event wiring ──────────────────────────────────────────────
+document.getElementById('go-btn').onclick = () => go(urlBar.value.trim());
+urlBar.onkeydown = e => { if (e.key === 'Enter') go(urlBar.value.trim()); };
+backBtn.onclick  = () => { if (histIdx > 0)              { histIdx--; go(hist[histIdx], false); } };
+fwdBtn.onclick   = () => { if (histIdx < hist.length-1)  { histIdx++; go(hist[histIdx], false); } };
+document.getElementById('rl-btn').onclick = () => go(current, false);
+
+// Messages from proxied page (injected runtime sends these)
+window.addEventListener('message', e => {
+  if (e.data?.type === '__pxy_nav__') go(e.data.url);
+});
+
+// ── Helpers ───────────────────────────────────────────────────
+function updateBtns() {
+  backBtn.disabled = histIdx <= 0;
+  fwdBtn.disabled  = histIdx >= hist.length - 1;
+}
+function setProgress(pct) {
+  progress.style.width   = pct + '%';
+  progress.style.opacity = pct > 0 && pct < 100 ? '1' : '0';
+}
+function setStatus(msg) { statusEl.textContent = msg; }
+function showErr(url, msg) {
+  errDet.textContent = `"${url}" — ${msg}`;
+  errBox.classList.add('show');
+  setStatus('Failed');
+}
+function retry() { errBox.classList.remove('show'); go(current, false); }
+frame.onload = () => setProgress(0);
+</script>
+</body>
+</html>

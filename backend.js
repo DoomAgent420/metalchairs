@@ -141,13 +141,14 @@ function rewriteHtml(html, base) {
     }
   );
 
-  html = html.replace(/(\ssrcset)\s*=\s*(["'])([^"']*)\2/gi, (_, attr, q, srcset) => {
+// In rewriteHtml(), after the CSP/XFO strip:
+html = html.replace(/<link[^>]+rel\s*=\s*["']preload["'][^>]*>/gi, '');
     const rw = srcset.split(',').map(part => {
       const t = part.trim(), sp = t.search(/\s/);
       return sp === -1 ? px(t, base) : px(t.slice(0, sp), base) + t.slice(sp);
     }).join(', ');
     return `${attr}=${q}${rw}${q}`;
-  });
+  };
 
   html = html.replace(/url\((["']?)([^)"']+)\1\)/gi, (m, q, url) => {
     if (url.startsWith('data:')) return m;
@@ -161,7 +162,7 @@ function rewriteHtml(html, base) {
     html = runtime + html;
   }
   return html;
-}
+
 
 function rewriteCss(css, base) {
   return css.replace(/url\((["']?)([^)"']+)\1\)/gi, (m, q, url) => {

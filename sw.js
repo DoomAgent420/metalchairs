@@ -8,7 +8,7 @@
 //  Paste your worker URL below (same one as in worker.js and index.html)
 // ============================================================
 
-const WORKER = 'https://PASTE-YOUR-WORKER-URL-HERE.workers.dev';
+const WORKER = 'https://quiet-sound-cc77.chrisjlove2022.workers.dev/';
 
 // ─────────────────────────────────────────────────────────────
 //  Nothing below this line needs to be changed

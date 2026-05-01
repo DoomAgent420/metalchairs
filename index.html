@@ -81,7 +81,6 @@ body{display:flex;flex-direction:column}
 </head>
 <body>
 
-<!-- ── Toolbar ────────────────────────────────────────── -->
 <div id="toolbar">
   <button class="nav-btn" id="back-btn" title="Back" disabled>&#8592;</button>
   <button class="nav-btn" id="fwd-btn"  title="Forward" disabled>&#8594;</button>
@@ -93,23 +92,24 @@ body{display:flex;flex-direction:column}
   <button id="go-btn">Go</button>
 </div>
 
-<!-- ── Status bar ─────────────────────────────────────── -->
 <div id="statusbar">
   <span id="status-txt">Ready</span>
   <span id="backend-pill">worker</span>
 </div>
 
-<!-- ── Frame area ─────────────────────────────────────── -->
 <div id="frame-wrap">
   <div id="progress"></div>
+
+  <!--
+    FIX: allow-same-origin is required so scripts inside the proxied
+    page can read/write the DOM properly. The src is always a blob: URL
+    on your own GitHub Pages origin, so this does not expose anything.
+  -->
   <iframe id="proxy-frame"
-    sandbox="allow-scripts allow-forms allow-popups"
+    sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
     referrerpolicy="no-referrer">
   </iframe>
-  <iframe id="proxy-frame"
-  sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
-  referrerpolicy="no-referrer">
-</iframe>
+
   <div id="err">
     <h2>Could not load page</h2>
     <p id="err-detail"></p>
@@ -118,12 +118,17 @@ body{display:flex;flex-direction:column}
 </div>
 
 <script>
-// ── Config ────────────────────────────────────────────────────
-// After deploying worker.js, put your worker URL here:
-const WORKER = 'https://quiet-sound-cc77.chrisjlove2022.workers.dev/';
-// If you host backend.js somewhere (Render, Railway, etc.) put it here:
-const FALLBACK = 'https://YOUR-FALLBACK-SERVER.com/api';
-// ─────────────────────────────────────────────────────────────
+// ── Config ─────────────────────────────────────────────────────────────────
+//
+//  WORKER  → paste your Cloudflare Worker URL here (same one as in worker.js)
+//  FALLBACK → if you deployed backend.js somewhere, paste that URL here.
+//             If you haven't, just leave the second one as-is — it will
+//             gracefully fail and show an error rather than crashing.
+//
+const WORKER  = 'https://PASTE-YOUR-WORKER-URL-HERE.workers.dev';
+const FALLBACK = 'https://PASTE-YOUR-FALLBACK-URL-HERE/api';
+//
+// ───────────────────────────────────────────────────────────────────────────
 
 const frame    = document.getElementById('proxy-frame');
 const urlBar   = document.getElementById('url-bar');
@@ -138,12 +143,15 @@ const lock     = document.getElementById('lock');
 
 let hist = [], histIdx = -1, current = '';
 
-// ── Register Service Worker (Layer 2 interception) ───────────
+// Cookie jar — stores cookies per origin so logins persist within the tab
+const cookieJar = {};
+
+// Register Service Worker (Layer 2 — catches assets the injected JS misses)
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
 }
 
-// ── Core navigate ─────────────────────────────────────────────
+// ── Navigate ───────────────────────────────────────────────────────────────
 async function go(rawUrl, push = true) {
   if (!rawUrl) return;
   if (!/^https?:\/\//i.test(rawUrl)) rawUrl = 'https://' + rawUrl;
@@ -160,11 +168,11 @@ async function go(rawUrl, push = true) {
   try {
     html = await fetchThrough(WORKER, rawUrl);
   } catch (workerErr) {
-    setStatus('Worker failed, trying fallback…');
+    setStatus('Worker failed — trying fallback…');
     try {
       html = await fetchThrough(FALLBACK, rawUrl);
       backend = 'fallback';
-    } catch (fbErr) {
+    } catch {
       setProgress(0);
       showErr(rawUrl, workerErr.message);
       return;
@@ -172,7 +180,7 @@ async function go(rawUrl, push = true) {
   }
 
   setProgress(80);
-  renderInFrame(html, rawUrl);
+  renderInFrame(html);
 
   pill.textContent = backend;
   pill.className = backend === 'fallback' ? 'fallback' : '';
@@ -187,15 +195,40 @@ async function go(rawUrl, push = true) {
   setStatus(rawUrl);
 }
 
+// ── Fetch with cookie jar ──────────────────────────────────────────────────
 async function fetchThrough(endpoint, rawUrl) {
-  const url = `${endpoint}/?url=${encodeURIComponent(rawUrl)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+  const origin = new URL(rawUrl).origin;
+  const storedCookies = cookieJar[origin] || '';
+
+  const headers = {};
+  if (storedCookies) headers['x-proxy-cookies'] = storedCookies;
+
+  const res = await fetch(`${endpoint}/?url=${encodeURIComponent(rawUrl)}`, {
+    signal: AbortSignal.timeout(14000),
+    headers,
+  });
+
   if (!res.ok && res.status >= 500) throw new Error(`HTTP ${res.status}`);
+
+  // Store any new cookies the worker collected from Set-Cookie headers
+  const newCookies = res.headers.get('x-proxy-set-cookies');
+  if (newCookies) {
+    // Parse each Set-Cookie line down to just name=value, merge into jar
+    const parsed = newCookies.split('\n').map(c => c.split(';')[0].trim()).filter(Boolean);
+    const existing = cookieJar[origin] ? cookieJar[origin].split('; ') : [];
+    for (const nv of parsed) {
+      const name = nv.split('=')[0];
+      const idx = existing.findIndex(e => e.split('=')[0] === name);
+      if (idx >= 0) existing[idx] = nv; else existing.push(nv);
+    }
+    cookieJar[origin] = existing.join('; ');
+  }
+
   return res.text();
 }
 
-function renderInFrame(html, rawUrl) {
-  // Use Blob URL so iframe is isolated from our origin
+// ── Render into iframe via Blob URL ────────────────────────────────────────
+function renderInFrame(html) {
   const prev = frame.dataset.blob;
   const blob = new Blob([html], { type: 'text/html' });
   const blobUrl = URL.createObjectURL(blob);
@@ -204,19 +237,19 @@ function renderInFrame(html, rawUrl) {
   if (prev) setTimeout(() => URL.revokeObjectURL(prev), 5000);
 }
 
-// ── Event wiring ──────────────────────────────────────────────
+// ── Event wiring ───────────────────────────────────────────────────────────
 document.getElementById('go-btn').onclick = () => go(urlBar.value.trim());
 urlBar.onkeydown = e => { if (e.key === 'Enter') go(urlBar.value.trim()); };
-backBtn.onclick  = () => { if (histIdx > 0)              { histIdx--; go(hist[histIdx], false); } };
-fwdBtn.onclick   = () => { if (histIdx < hist.length-1)  { histIdx++; go(hist[histIdx], false); } };
+backBtn.onclick  = () => { if (histIdx > 0)             { histIdx--; go(hist[histIdx], false); } };
+fwdBtn.onclick   = () => { if (histIdx < hist.length-1) { histIdx++; go(hist[histIdx], false); } };
 document.getElementById('rl-btn').onclick = () => go(current, false);
 
-// Messages from proxied page (injected runtime sends these)
+// Navigation messages from the injected runtime inside the proxied page
 window.addEventListener('message', e => {
   if (e.data?.type === '__pxy_nav__') go(e.data.url);
 });
 
-// ── Helpers ───────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 function updateBtns() {
   backBtn.disabled = histIdx <= 0;
   fwdBtn.disabled  = histIdx >= hist.length - 1;
